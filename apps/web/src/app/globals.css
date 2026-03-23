@@ -1,6 +1,5 @@
 @import "tailwindcss";
 
-/* ─── Design tokens ──────────────────────────────────────────────────────── */
 :root {
   --background: 0 0% 100%;
   --foreground: 240 10% 3.9%;
@@ -22,12 +21,6 @@
   --input: 240 5.9% 90%;
   --ring: 221 83% 53%;
   --radius: 0.5rem;
-
-  /* Sidebar */
-  --sidebar-bg: 240 10% 3.9%;
-  --sidebar-fg: 240 4.8% 95.9%;
-  --sidebar-border: 240 3.7% 15.9%;
-  --sidebar-accent: 240 3.7% 15.9%;
 }
 
 .dark {
@@ -46,15 +39,10 @@
   --accent: 240 3.7% 15.9%;
   --accent-foreground: 0 0% 98%;
   --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 0 0% 98%;
+  --destructive-foreground: 0 0% 100%;
   --border: 240 3.7% 15.9%;
   --input: 240 3.7% 15.9%;
   --ring: 217 91% 60%;
-
-  --sidebar-bg: 240 5.9% 10%;
-  --sidebar-fg: 240 4.8% 95.9%;
-  --sidebar-border: 240 3.7% 15.9%;
-  --sidebar-accent: 240 3.7% 15.9%;
 }
 
 * {
