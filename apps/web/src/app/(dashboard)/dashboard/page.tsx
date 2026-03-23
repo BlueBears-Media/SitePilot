@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Globe, AlertTriangle, Clock, XCircle } from 'lucide-react'
 import { sitesApi, type Job } from '@/lib/api'
+import { getJobResultSummary } from '@/lib/jobs'
 import { formatRelativeDate, getStatusBgColor, cn } from '@/lib/utils'
 
 function MetricCard({
@@ -58,20 +59,35 @@ function MetricCard({
 }
 
 function JobRow({ job }: { job: Job }) {
+  const summary = getJobResultSummary(job)
+
   return (
-    <div className="flex items-center justify-between py-3 border-b border-border last:border-0">
-      <div className="flex items-center gap-3">
-        <span
-          className={cn(
-            'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
-            getStatusBgColor(job.status),
-          )}
-        >
-          {job.status}
-        </span>
-        <span className="text-sm text-foreground">{job.type.replace(/_/g, ' ')}</span>
+    <div className="flex items-start justify-between gap-4 py-3 border-b border-border last:border-0">
+      <div className="min-w-0">
+        <div className="flex items-center gap-3">
+          <span
+            className={cn(
+              'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
+              getStatusBgColor(job.status),
+            )}
+          >
+            {job.status}
+          </span>
+          <span className="text-sm text-foreground">{job.type.replace(/_/g, ' ')}</span>
+        </div>
+        {summary && (
+          <p
+            title={summary}
+            className={cn(
+              'mt-1 text-xs truncate',
+              job.status === 'failed' ? 'text-red-500' : 'text-muted-foreground',
+            )}
+          >
+            {summary}
+          </p>
+        )}
       </div>
-      <span className="text-xs text-muted-foreground">{formatRelativeDate(job.createdAt)}</span>
+      <span className="text-xs text-muted-foreground whitespace-nowrap">{formatRelativeDate(job.createdAt)}</span>
     </div>
   )
 }

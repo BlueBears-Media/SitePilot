@@ -5,8 +5,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Plus, Copy, Check, ExternalLink, RefreshCw, HardDrive } from 'lucide-react'
 import { sitesApi, type Site, type SiteWithToken } from '@/lib/api'
+import { getJobErrorMessage, waitForTerminalJob } from '@/lib/jobs'
 import { cn, formatRelativeDate, getStatusBgColor } from '@/lib/utils'
 import Link from 'next/link'
+
+const solidPanelClass =
+  'bg-[hsl(var(--card))] text-[hsl(var(--card-foreground))] shadow-2xl shadow-black/40'
+const solidSheetClass =
+  'bg-[hsl(var(--card))] text-[hsl(var(--card-foreground))] shadow-2xl shadow-black/50'
 
 function StatusBadge({ status }: { status: string }) {
   return (
@@ -45,7 +51,7 @@ function AddSiteSlideOver({
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-card border-l border-border flex flex-col h-full">
+      <div className={cn('relative w-full max-w-md border-l border-border flex flex-col h-full', solidSheetClass)}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="text-base font-semibold">Add site</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">×</button>
@@ -104,7 +110,7 @@ function TokenDisplayModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60" />
-      <div className="relative bg-card border border-border rounded-xl p-6 max-w-md w-full mx-4">
+      <div className={cn('relative border border-border rounded-xl p-6 max-w-md w-full mx-4', solidPanelClass)}>
         <h2 className="text-base font-semibold mb-1">Site created</h2>
         <p className="text-sm text-muted-foreground mb-4">
           Copy this companion token and paste it into the SitePilot Companion plugin settings on your WordPress site.
@@ -151,9 +157,33 @@ export default function SitesPage() {
   })
 
   const checkUpdatesMutation = useMutation({
-    mutationFn: (siteId: string) => sitesApi.checkUpdates(siteId),
-    onSuccess: () => toast.success('Update check started'),
-    onError: () => toast.error('Failed to start update check'),
+    mutationFn: ({ siteId }: { siteId: string; siteName: string }) => sitesApi.checkUpdates(siteId),
+    onSuccess: ({ jobId }, variables) => {
+      toast.success(`Update check started for ${variables.siteName}`)
+
+      void (async () => {
+        try {
+          const job = await waitForTerminalJob(jobId, { timeoutMs: 5 * 60 * 1000 })
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['sites'] }),
+            queryClient.invalidateQueries({ queryKey: ['site-jobs', variables.siteId] }),
+          ])
+
+          if (job.status === 'failed') {
+            const errorMessage = getJobErrorMessage(job.result) ?? 'The backend did not return an error message.'
+            toast.error(`Update check failed for ${variables.siteName}: ${errorMessage}`)
+            return
+          }
+
+          toast.success(`Update check finished for ${variables.siteName}`)
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : 'Failed to load job result')
+        }
+      })()
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to start update check')
+    },
   })
 
   const handleSiteCreated = (site: SiteWithToken) => {
@@ -236,7 +266,7 @@ export default function SitesPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       <button
-                        onClick={() => checkUpdatesMutation.mutate(site.id)}
+                        onClick={() => checkUpdatesMutation.mutate({ siteId: site.id, siteName: site.name })}
                         disabled={checkUpdatesMutation.isPending}
                         className="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-muted transition-colors"
                         title="Check updates"

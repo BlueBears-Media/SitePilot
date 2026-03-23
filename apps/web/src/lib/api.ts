@@ -1,12 +1,18 @@
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:3001'
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = new Headers(options?.headers)
+
+  // Only advertise JSON when we are actually sending a JSON body.
+  // Fastify rejects POST requests with `Content-Type: application/json`
+  // and an empty body as a bad request.
+  if (options?.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
     ...options,
   })
 
@@ -65,7 +71,9 @@ export const sitesApi = {
   get: (id: string) => apiFetch<Site>(`/sites/${id}`),
   create: (data: { name: string; url: string }) =>
     apiFetch<SiteWithToken>('/sites', { method: 'POST', body: JSON.stringify(data) }),
-  update: (id: string, data: Partial<{ name: string; url: string; storageProfileId: string }>) =>
+  rotateToken: (id: string) =>
+    apiFetch<SiteWithToken>(`/sites/${id}/rotate-token`, { method: 'POST' }),
+  update: (id: string, data: Partial<{ name: string; url: string; storageProfileId: string | null }>) =>
     apiFetch<Site>(`/sites/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   delete: (id: string) => apiFetch<void>(`/sites/${id}`, { method: 'DELETE' }),
   checkUpdates: (id: string) =>
@@ -89,6 +97,7 @@ export const sitesApi = {
 export interface Backup {
   id: string
   siteId: string
+  storageProfileId: string | null
   status: string
   type: string
   snapshotTag: string | null
@@ -102,7 +111,7 @@ export interface Backup {
 export const backupsApi = {
   list: (siteId: string) => apiFetch<Backup[]>(`/sites/${siteId}/backups`),
   get: (id: string) => apiFetch<Backup>(`/backups/${id}`),
-  create: (siteId: string, data: { type: string; snapshotTag?: string }) =>
+  create: (siteId: string, data: { type: string; storageProfileId: string; snapshotTag?: string }) =>
     apiFetch<{ jobId: string; status: string }>(`/sites/${siteId}/backups`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -165,7 +174,42 @@ export interface UpdateCheck {
   coreUpdate: unknown | null
   pluginUpdates: unknown[]
   themeUpdates: unknown[]
-  checkedAt: string
+  checkedAt: string | null
+}
+
+export interface CoreUpdateInfo {
+  current_version: string
+  available_version: string
+  changelog_url: string
+}
+
+export interface PluginUpdateInfo {
+  slug: string
+  plugin_file?: string
+  name: string
+  current_version: string
+  available_version: string
+  changelog_url: string
+  is_active: boolean
+}
+
+export interface ThemeUpdateInfo {
+  slug: string
+  name: string
+  current_version: string
+  available_version: string
+}
+
+export interface SiteUpdateSnapshot {
+  siteId: string
+  checkedAt: string | null
+  coreUpdate: CoreUpdateInfo | null
+  pluginUpdates: PluginUpdateInfo[]
+  themeUpdates: ThemeUpdateInfo[]
+}
+
+export const updateChecksApi = {
+  get: (siteId: string) => apiFetch<SiteUpdateSnapshot>(`/sites/${siteId}/updates`),
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────
