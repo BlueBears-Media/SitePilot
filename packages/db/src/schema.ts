@@ -68,6 +68,7 @@ export const backups = pgTable('backups', {
   siteId: uuid('site_id')
     .notNull()
     .references(() => sites.id, { onDelete: 'cascade' }),
+  storageProfileId: uuid('storage_profile_id').references(() => storageProfiles.id),
   status: text('status').notNull().default('pending'), // 'pending' | 'running' | 'complete' | 'failed'
   type: text('type').notNull(), // 'full' | 'db_only' | 'files_only'
   snapshotTag: text('snapshot_tag'), // e.g. 'pre-rollback', 'pre-update'
@@ -147,6 +148,10 @@ export const backupsRelations = relations(backups, ({ one }) => ({
   site: one(sites, {
     fields: [backups.siteId],
     references: [sites.id],
+  }),
+  storageProfile: one(storageProfiles, {
+    fields: [backups.storageProfileId],
+    references: [storageProfiles.id],
   }),
 }))
 

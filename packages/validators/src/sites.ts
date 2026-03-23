@@ -8,7 +8,7 @@ export const createSiteSchema = z.object({
 export const updateSiteSchema = createSiteSchema
   .partial()
   .extend({
-    storageProfileId: z.string().uuid('Must be a valid UUID').optional(),
+    storageProfileId: z.string().uuid('Must be a valid UUID').nullable().optional(),
   })
 
 export type CreateSiteInput = z.infer<typeof createSiteSchema>

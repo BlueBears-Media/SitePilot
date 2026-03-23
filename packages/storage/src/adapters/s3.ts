@@ -75,8 +75,19 @@ export class S3Adapter implements StorageAdapter {
       })
       await this.client.send(command)
       return true
-    } catch {
-      return false
+    } catch (error) {
+      const errorName = error instanceof Error ? error.name : ''
+      const statusCode = getAwsHttpStatusCode(error)
+
+      if (
+        errorName === 'NotFound' ||
+        errorName === 'NoSuchKey' ||
+        (statusCode === 404 && errorName !== 'NoSuchBucket')
+      ) {
+        return false
+      }
+
+      throw error
     }
   }
 
@@ -87,4 +98,18 @@ export class S3Adapter implements StorageAdapter {
     })
     return getSignedUrl(this.client, command, { expiresIn: expiresInSeconds })
   }
+}
+
+function getAwsHttpStatusCode(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('$metadata' in error)) {
+    return undefined
+  }
+
+  const metadata = error.$metadata
+  if (typeof metadata !== 'object' || metadata === null || !('httpStatusCode' in metadata)) {
+    return undefined
+  }
+
+  const httpStatusCode = metadata.httpStatusCode
+  return typeof httpStatusCode === 'number' ? httpStatusCode : undefined
 }
