@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace SitePilot\Admin;
 
 use SitePilot\HealthCheck;
+use SitePilot\RequestLog;
 
 /**
  * SettingsPage — WordPress admin settings UI for the SitePilot Companion.
@@ -78,11 +79,29 @@ class SettingsPage
         delete_option(self::OPTION_TOKEN);
         delete_option(self::OPTION_ENABLED);
         delete_option('sitepilot_last_seen');
+        RequestLog::clear();
 
         // Deactivate the plugin
         deactivate_plugins(SITEPILOT_BASENAME);
 
         wp_redirect(admin_url('plugins.php?deactivated=1'));
+        exit;
+    }
+
+    /**
+     * Handle clearing the visual request log.
+     */
+    public static function handle_clear_request_log(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_die('Unauthorized');
+        }
+
+        check_admin_referer('sitepilot_clear_request_log');
+
+        RequestLog::clear();
+
+        wp_redirect(admin_url('options-general.php?page=' . self::MENU_SLUG . '&log_cleared=1'));
         exit;
     }
 

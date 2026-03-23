@@ -29,31 +29,41 @@ class Auth
      */
     public static function verify_request(\WP_REST_Request $request): bool
     {
+        $context = [
+            'method' => $request->get_method(),
+            'route'  => $request->get_route(),
+        ];
+
         // 1. Check the companion is enabled
         if (! get_option('sitepilot_enabled', false)) {
+            RequestLog::warning('Rejected SitePilot request', $context + ['reason' => 'companion_disabled']);
             return false;
         }
 
         // 2. Read and validate the timestamp header
         $timestamp_raw = $request->get_header('X-SitePilot-Timestamp');
         if (empty($timestamp_raw)) {
+            RequestLog::warning('Rejected SitePilot request', $context + ['reason' => 'missing_timestamp']);
             return false;
         }
 
         $timestamp = (int) $timestamp_raw;
         if (abs(time() - $timestamp) > self::TIMESTAMP_WINDOW) {
+            RequestLog::warning('Rejected SitePilot request', $context + ['reason' => 'timestamp_out_of_window']);
             return false; // Reject stale or future-dated requests
         }
 
         // 3. Read the signature header
         $provided_signature = $request->get_header('X-SitePilot-Signature');
         if (empty($provided_signature)) {
+            RequestLog::warning('Rejected SitePilot request', $context + ['reason' => 'missing_signature']);
             return false;
         }
 
         // 4. Retrieve the stored companion token
         $token = get_option('sitepilot_token', '');
         if (empty($token)) {
+            RequestLog::warning('Rejected SitePilot request', $context + ['reason' => 'missing_token']);
             return false; // Not configured
         }
 
@@ -68,11 +78,13 @@ class Auth
 
         // 6. Constant-time comparison to prevent timing attacks
         if (! hash_equals($expected, $provided_signature)) {
+            RequestLog::warning('Rejected SitePilot request', $context + ['reason' => 'signature_mismatch']);
             return false;
         }
 
         // Update last-seen timestamp for the connection status banner
         update_option('sitepilot_last_seen', current_time('mysql', true));
+        RequestLog::info('Authenticated SitePilot request', $context);
 
         return true;
     }

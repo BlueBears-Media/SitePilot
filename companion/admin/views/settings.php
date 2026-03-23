@@ -9,7 +9,9 @@ $token      = get_option('sitepilot_token', '');
 $enabled    = (bool) get_option('sitepilot_enabled', false);
 $last_seen  = get_option('sitepilot_last_seen', '');
 $health     = SitePilot\HealthCheck::get_info();
+$request_log = SitePilot\RequestLog::get_entries();
 $saved      = isset($_GET['saved']) && $_GET['saved'] === '1';
+$log_cleared = isset($_GET['log_cleared']) && $_GET['log_cleared'] === '1';
 
 // Connection status calculation
 $status_class   = 'notice-error';
@@ -45,6 +47,9 @@ $show_token_input = empty($token) || isset($_GET['replace_token']);
 
     <?php if ($saved) : ?>
         <div class="notice notice-success is-dismissible"><p>Settings saved.</p></div>
+    <?php endif; ?>
+    <?php if ($log_cleared) : ?>
+        <div class="notice notice-success is-dismissible"><p>Request log cleared.</p></div>
     <?php endif; ?>
 
     <!-- ── Connection status banner ──────────────────────────────────────── -->
@@ -210,6 +215,88 @@ $show_token_input = empty($token) || isset($_GET['replace_token']);
                     </tr>
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- ── Request log ────────────────────────────────────────────────────── -->
+    <div class="postbox" style="margin-top:20px;max-width:1100px;">
+        <div class="postbox-header">
+            <h2 class="hndle">Request Log</h2>
+        </div>
+        <div class="inside">
+            <p class="description" style="margin-bottom:12px;">
+                Recent SitePilot requests and companion events. Refresh this page after triggering a backup or update to see what the WordPress side actually received and handled.
+            </p>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+                <a
+                    href="<?php echo esc_url(admin_url('options-general.php?page=sitepilot-companion')); ?>"
+                    class="button button-secondary"
+                >
+                    Refresh log
+                </a>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline;">
+                    <?php wp_nonce_field('sitepilot_clear_request_log'); ?>
+                    <input type="hidden" name="action" value="sitepilot_clear_request_log">
+                    <button type="submit" class="button button-link-delete">Clear log</button>
+                </form>
+            </div>
+
+            <?php if (empty($request_log)) : ?>
+                <p>No SitePilot requests logged yet.</p>
+            <?php else : ?>
+                <table class="widefat striped">
+                    <thead>
+                        <tr>
+                            <th style="width:150px;">Time (UTC)</th>
+                            <th style="width:90px;">Level</th>
+                            <th style="width:280px;">Message</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($request_log as $entry) : ?>
+                            <?php
+                            $level = is_string($entry['level'] ?? null) ? $entry['level'] : 'info';
+                            $badge_style = 'background:#2271b1;color:#fff;';
+                            if ($level === 'warning') {
+                                $badge_style = 'background:#dba617;color:#1d2327;';
+                            } elseif ($level === 'error') {
+                                $badge_style = 'background:#d63638;color:#fff;';
+                            }
+
+                            $context = $entry['context'] ?? [];
+                            $context_json = ! empty($context)
+                                ? wp_json_encode($context, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+                                : '';
+                            ?>
+                            <tr>
+                                <td>
+                                    <code><?php echo esc_html((string) ($entry['timestamp'] ?? '')); ?></code>
+                                </td>
+                                <td>
+                                    <span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;text-transform:uppercase;<?php echo esc_attr($badge_style); ?>">
+                                        <?php echo esc_html($level); ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <strong><?php echo esc_html((string) ($entry['message'] ?? '')); ?></strong>
+                                </td>
+                                <td>
+                                    <?php if (! empty($context_json)) : ?>
+                                        <details>
+                                            <summary style="cursor:pointer;">View details</summary>
+                                            <pre style="margin-top:8px;padding:10px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:4px;max-height:240px;overflow:auto;"><?php echo esc_html($context_json); ?></pre>
+                                        </details>
+                                    <?php else : ?>
+                                        <span style="color:#646970;">No extra details</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
         </div>
     </div>
 

@@ -11,6 +11,7 @@ $sitepilot_options = [
     'sitepilot_token',
     'sitepilot_enabled',
     'sitepilot_last_seen',
+    'sitepilot_request_log',
 ];
 
 foreach ($sitepilot_options as $option) {

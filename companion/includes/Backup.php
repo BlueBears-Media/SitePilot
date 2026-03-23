@@ -59,6 +59,14 @@ class Backup
         $include_db    = in_array($type, ['full', 'db_only'], true);
         $include_files = in_array($type, ['full', 'files_only'], true);
 
+        RequestLog::info('Backup stream started', [
+            'method'        => $request->get_method(),
+            'route'         => $request->get_route(),
+            'backup_type'   => $type,
+            'include_db'    => $include_db,
+            'include_files' => $include_files,
+        ]);
+
         // ── 2. Build initial manifest ─────────────────────────────────────
 
         $manifest = [
@@ -94,6 +102,10 @@ class Backup
             // Get all table names
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery
             $tables = $wpdb->get_col('SHOW TABLES');
+            RequestLog::info('Backup database dump prepared', [
+                'backup_type' => $type,
+                'table_count' => is_array($tables) ? count($tables) : 0,
+            ]);
 
             foreach ($tables as $table) {
                 $manifest['db_tables'][] = $table;
@@ -142,6 +154,10 @@ class Backup
 
                 flush();
             }
+
+            RequestLog::info('Backup database dump streamed', [
+                'table_count' => count($manifest['db_tables']),
+            ]);
         }
 
         // ── 5. Files archive (pure-PHP streaming tar+gzip) ───────────────
@@ -149,6 +165,9 @@ class Backup
         if ($include_files) {
             // Build list of files to include
             $files_to_archive = self::collect_files();
+            RequestLog::info('Backup file archive prepared', [
+                'candidate_file_count' => count($files_to_archive),
+            ]);
 
             // Write tar.gz to a temp file, then stream it.
             //
@@ -165,6 +184,9 @@ class Backup
             if ($gz === false) {
                 // Fallback: skip file archive with a warning in the manifest
                 $manifest['files_error'] = 'Failed to open temp file for writing';
+                RequestLog::warning('Backup file archive failed to open temp file', [
+                    'temp_path' => basename($temp_path),
+                ]);
             } else {
                 foreach ($files_to_archive as $abs_path => $rel_path) {
                     if (! is_readable($abs_path) || ! is_file($abs_path)) {
@@ -243,12 +265,23 @@ class Backup
 
                 // Clean up temp file
                 @unlink($temp_path);
+
+                RequestLog::info('Backup file archive streamed', [
+                    'archived_file_count' => count($manifest['files']),
+                    'archive_bytes'       => $tar_size !== false ? $tar_size : null,
+                ]);
             }
         }
 
         // ── 6. Final manifest (with checksums) ───────────────────────────
 
         self::write_part($boundary, 'manifest.json', 'application/json', json_encode($manifest) ?: '{}');
+        RequestLog::info('Backup stream finished', [
+            'backup_type'        => $type,
+            'db_table_count'     => count($manifest['db_tables']),
+            'archived_file_count' => count($manifest['files']),
+            'has_files_error'    => isset($manifest['files_error']),
+        ]);
 
         // ── 7. End multipart response ─────────────────────────────────────
 

@@ -23,8 +23,15 @@ define('SITEPILOT_VERSION', '1.0.0');
 define('SITEPILOT_DIR', __DIR__);
 define('SITEPILOT_BASENAME', plugin_basename(__FILE__));
 
-// Always-needed: Auth is used by the REST permission callback
+// Load the plugin classes eagerly. These files only declare classes, and the
+// predictable bootstrap is more reliable than hand-managed lazy loading here.
 require_once SITEPILOT_DIR . '/includes/Auth.php';
+require_once SITEPILOT_DIR . '/includes/HealthCheck.php';
+require_once SITEPILOT_DIR . '/includes/RequestLog.php';
+require_once SITEPILOT_DIR . '/includes/Backup.php';
+require_once SITEPILOT_DIR . '/includes/Updates.php';
+require_once SITEPILOT_DIR . '/includes/Restore.php';
+require_once SITEPILOT_DIR . '/includes/Router.php';
 
 // ─── Activation hook ─────────────────────────────────────────────────────────
 
@@ -32,6 +39,7 @@ register_activation_hook(__FILE__, function (): void {
     add_option('sitepilot_token', '');
     add_option('sitepilot_enabled', false);
     add_option('sitepilot_last_seen', '');
+    add_option('sitepilot_request_log', [], '', false);
 });
 
 // ─── Deactivation hook ───────────────────────────────────────────────────────
@@ -40,14 +48,9 @@ register_deactivation_hook(__FILE__, function (): void {
     // Intentionally do nothing — preserve config across deactivate/activate cycles.
 });
 
-// ─── Bootstrap REST routes (lazy-load heavy classes only when REST API runs) ──
+// ─── Bootstrap REST routes ────────────────────────────────────────────────────
 
 add_action('rest_api_init', function (): void {
-    require_once SITEPILOT_DIR . '/includes/HealthCheck.php';
-    require_once SITEPILOT_DIR . '/includes/Backup.php';
-    require_once SITEPILOT_DIR . '/includes/Updates.php';
-    require_once SITEPILOT_DIR . '/includes/Restore.php';
-    require_once SITEPILOT_DIR . '/includes/Router.php';
     SitePilot\Router::register_routes();
 });
 
@@ -58,17 +61,11 @@ if (is_admin()) {
     add_action('admin_menu', [SitePilot\Admin\SettingsPage::class, 'add_menu']);
     add_action('admin_init', [SitePilot\Admin\SettingsPage::class, 'register_settings']);
     add_action('admin_post_sitepilot_save_settings', [SitePilot\Admin\SettingsPage::class, 'handle_save']);
+    add_action('admin_post_sitepilot_clear_request_log', [SitePilot\Admin\SettingsPage::class, 'handle_clear_request_log']);
     add_action('admin_post_sitepilot_remove', [SitePilot\Admin\SettingsPage::class, 'handle_remove']);
 }
 
-// ─── Background job hooks (lazy-load only when cron fires) ───────────────────
+// ─── Background job hooks ─────────────────────────────────────────────────────
 
-add_action('sitepilot_run_update', function (string $jobId, string $updateType, string $slug): void {
-    require_once SITEPILOT_DIR . '/includes/Updates.php';
-    SitePilot\Updates::run_update($jobId, $updateType, $slug);
-}, 10, 3);
-
-add_action('sitepilot_run_restore', function (string $jobId, string $signedUrl, string $manifest, string $scope): void {
-    require_once SITEPILOT_DIR . '/includes/Restore.php';
-    SitePilot\Restore::run_restore($jobId, $signedUrl, $manifest, $scope);
-}, 10, 4);
+add_action('sitepilot_run_update', [SitePilot\Updates::class, 'run_update'], 10, 3);
+add_action('sitepilot_run_restore', [SitePilot\Restore::class, 'run_restore'], 10, 4);
