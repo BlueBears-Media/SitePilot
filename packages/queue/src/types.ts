@@ -1,6 +1,7 @@
 export interface BackupJobPayload {
   siteId: string
   type: 'full' | 'db_only' | 'files_only'
+  storageProfileId?: string
   snapshotTag?: string
 }
 

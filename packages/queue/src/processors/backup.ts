@@ -1,6 +1,12 @@
 import type { Job } from 'bullmq'
 import { db, jobs, sites, backups, storageProfiles } from '@sitepilot/db'
-import { StorageAdapterFactory } from '@sitepilot/storage'
+import {
+  StorageAdapterFactory,
+  LocalAdapter,
+  decryptConfig,
+  type EncryptedConfig,
+  type StorageAdapter,
+} from '@sitepilot/storage'
 import { eq } from 'drizzle-orm'
 import { Readable } from 'node:stream'
 import { signRequest, decryptToken } from '../hmac'
@@ -16,6 +22,114 @@ async function publishProgress(jobId: string, progress: number, message?: string
     `job:${jobId}:progress`,
     JSON.stringify({ jobId, progress, message, timestamp: Date.now() }),
   )
+}
+
+interface StorageTargetDebugInfo {
+  mode: 'profile' | 'local-fallback'
+  profileId: string | null
+  profileName: string | null
+  profileType: string
+  summary: string
+}
+
+interface ResolvedStorageTarget {
+  adapter: StorageAdapter
+  debug: StorageTargetDebugInfo
+}
+
+interface ReceivedPartDebugInfo {
+  index: number
+  name: string
+  bytes: number
+}
+
+interface UploadedObjectDebugInfo {
+  name: string
+  key: string
+  bytes: number
+  existsAfterUpload: boolean
+}
+
+function logBackup(jobId: string, message: string, details?: unknown): void {
+  console.info(
+    `[backup:${jobId}] ${message}`,
+    details ? JSON.stringify(details) : '',
+  )
+}
+
+function summarizeStorageLocation(
+  profileType: string,
+  config: Record<string, unknown>,
+): string {
+  switch (profileType) {
+    case 's3': {
+      const bucket = typeof config['bucket'] === 'string' ? config['bucket'] : '(unknown-bucket)'
+      const endpoint = typeof config['endpoint'] === 'string' ? config['endpoint'] : ''
+      const region = typeof config['region'] === 'string' ? config['region'] : ''
+      const viaEndpoint = endpoint ? ` via ${endpoint}` : ''
+      const inRegion = region ? ` (${region})` : ''
+      return `s3://${bucket}${inRegion}${viaEndpoint}`
+    }
+    case 'nfs': {
+      const mountPath = typeof config['mountPath'] === 'string' ? config['mountPath'] : '(unknown-path)'
+      return `nfs://${mountPath}`
+    }
+    case 'local': {
+      const directory = typeof config['directory'] === 'string' ? config['directory'] : 'data/backups'
+      return `local://${directory}`
+    }
+    default:
+      return profileType
+  }
+}
+
+function getExpectedObjectNames(type: BackupJobPayload['type']): string[] {
+  switch (type) {
+    case 'full':
+      return ['dump.sql', 'files.tar.gz']
+    case 'db_only':
+      return ['dump.sql']
+    case 'files_only':
+      return ['files.tar.gz']
+  }
+}
+
+async function resolveStorageTarget(storageProfileId: string | null): Promise<ResolvedStorageTarget> {
+  if (storageProfileId) {
+    const profile = await db.query.storageProfiles.findFirst({
+      where: eq(storageProfiles.id, storageProfileId),
+    })
+    if (!profile) {
+      throw new Error(`Storage profile not found: ${storageProfileId}`)
+    }
+
+    const config = decryptConfig(profile.config as EncryptedConfig) as Record<string, unknown>
+    return {
+      adapter: StorageAdapterFactory.create(profile),
+      debug: {
+        mode: 'profile',
+        profileId: profile.id,
+        profileName: profile.name,
+        profileType: profile.type,
+        summary: summarizeStorageLocation(profile.type, config),
+      },
+    }
+  }
+
+  const directory = 'data/backups'
+  return {
+    adapter: new LocalAdapter({
+      apiBaseUrl: process.env['API_BASE_URL'] ?? 'http://localhost:3001',
+      tokenSecret: process.env['STORAGE_ENCRYPTION_KEY'] ?? 'dev-secret',
+    }),
+    debug: {
+      mode: 'local-fallback',
+      profileId: null,
+      profileName: null,
+      profileType: 'local',
+      summary: `local://${directory}`,
+    },
+  }
 }
 
 /**
@@ -84,19 +198,25 @@ async function* parseMultipartStream(
 }
 
 export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void> {
-  const { siteId, type, snapshotTag } = job.data
+  const { siteId, type, storageProfileId, snapshotTag } = job.data
   const jobId = job.id ?? 'unknown'
 
   // 1. Look up site and storage profile
   const site = await db.query.sites.findFirst({ where: eq(sites.id, siteId) })
   if (!site) throw new Error(`Site not found: ${siteId}`)
   if (!site.companionTokenHash) throw new Error(`Site ${siteId} has no companion token`)
+  const selectedStorageProfileId = storageProfileId ?? site.storageProfileId ?? null
+  const expectedObjectNames = getExpectedObjectNames(type)
+  const receivedParts: ReceivedPartDebugInfo[] = []
+  const uploadedObjects: UploadedObjectDebugInfo[] = []
+  let storageTarget: StorageTargetDebugInfo | null = null
 
   // 2. Create backup record in DB
   const [backup] = await db
     .insert(backups)
     .values({
       siteId,
+      storageProfileId: selectedStorageProfileId,
       type,
       snapshotTag,
       status: 'running',
@@ -111,6 +231,14 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
     .where(eq(jobs.id, jobId))
 
   await publishProgress(jobId, 0, 'Starting backup')
+  logBackup(jobId, 'Starting backup job', {
+    siteId,
+    backupId: backup.id,
+    type,
+    snapshotTag: snapshotTag ?? null,
+    selectedStorageProfileId,
+    expectedObjectNames,
+  })
 
   try {
     // 4. Build HMAC-signed headers for the companion request
@@ -149,33 +277,27 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
     if (!boundaryMatch) {
       throw new Error('Companion response is not multipart')
     }
-    const boundary = boundaryMatch[1] ?? ''
-
-    // Resolve storage adapter
-    let storageAdapter
-    if (site.storageProfileId) {
-      const profile = await db.query.storageProfiles.findFirst({
-        where: eq(storageProfiles.id, site.storageProfileId),
-      })
-      if (profile) {
-        storageAdapter = StorageAdapterFactory.create(profile)
-      }
+    const boundary = (boundaryMatch[1] ?? '').replace(/^"(.*)"$/, '$1')
+    if (!boundary) {
+      throw new Error('Companion response multipart boundary is empty')
     }
+    logBackup(jobId, 'Received multipart response from companion', {
+      contentType,
+      boundary,
+    })
 
-    if (!storageAdapter) {
-      // Fall back to local adapter if no storage profile configured
-      const { LocalAdapter } = await import('@sitepilot/storage')
-      storageAdapter = new LocalAdapter({
-        apiBaseUrl: process.env['API_BASE_URL'] ?? 'http://localhost:3001',
-        tokenSecret: process.env['STORAGE_ENCRYPTION_KEY'] ?? 'dev-secret',
-      })
-    }
+    const resolvedStorageTarget = await resolveStorageTarget(selectedStorageProfileId)
+    const storageAdapter = resolvedStorageTarget.adapter
+    storageTarget = resolvedStorageTarget.debug
+    logBackup(jobId, 'Resolved backup storage target', storageTarget)
 
     await publishProgress(jobId, 20, 'Receiving backup stream')
 
     let initialManifest: Record<string, unknown> = {}
     let finalManifest: Record<string, unknown> = {}
     let partIndex = 0
+    let sizeBytes = 0n
+    const storagePath = `backups/${siteId}/${backup.id}`
 
     if (!response.body) {
       throw new Error('Response body is null')
@@ -184,23 +306,69 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
     // 6. Parse multipart stream and route parts to storage
     for await (const part of parseMultipartStream(response.body, boundary)) {
       partIndex++
+      const normalizedPartName = part.name || '(unnamed)'
+      receivedParts.push({
+        index: partIndex,
+        name: normalizedPartName,
+        bytes: part.data.length,
+      })
+      logBackup(jobId, 'Parsed multipart part', {
+        index: partIndex,
+        name: normalizedPartName,
+        bytes: part.data.length,
+      })
+
       if (partIndex === 1) {
         // Part 1: initial manifest
         initialManifest = JSON.parse(part.data.toString('utf8')) as Record<string, unknown>
         await publishProgress(jobId, 30, 'Received manifest')
       } else if (part.name === 'dump.sql') {
         // Part 2: database dump
-        const storageKey = `backups/${siteId}/${backup.id}/dump.sql`
+        const storageKey = `${storagePath}/dump.sql`
         const readable = Readable.from(part.data)
         await storageAdapter.upload(storageKey, readable)
+        const existsAfterUpload = await storageAdapter.exists(storageKey)
+        uploadedObjects.push({
+          name: part.name,
+          key: storageKey,
+          bytes: part.data.length,
+          existsAfterUpload,
+        })
+        logBackup(jobId, 'Uploaded backup part', {
+          name: part.name,
+          key: storageKey,
+          bytes: part.data.length,
+          existsAfterUpload,
+        })
+        if (!existsAfterUpload) {
+          throw new Error(`Uploaded object could not be verified in storage: ${storageKey}`)
+        }
+        sizeBytes += BigInt(part.data.length)
         await publishProgress(jobId, 50, 'Database dump uploaded')
       } else if (part.name === 'files.tar.gz') {
         // Part 3: files archive
-        const storageKey = `backups/${siteId}/${backup.id}/files.tar.gz`
+        const storageKey = `${storagePath}/files.tar.gz`
         const readable = Readable.from(part.data)
         await storageAdapter.upload(storageKey, readable)
+        const existsAfterUpload = await storageAdapter.exists(storageKey)
+        uploadedObjects.push({
+          name: part.name,
+          key: storageKey,
+          bytes: part.data.length,
+          existsAfterUpload,
+        })
+        logBackup(jobId, 'Uploaded backup part', {
+          name: part.name,
+          key: storageKey,
+          bytes: part.data.length,
+          existsAfterUpload,
+        })
+        if (!existsAfterUpload) {
+          throw new Error(`Uploaded object could not be verified in storage: ${storageKey}`)
+        }
+        sizeBytes += BigInt(part.data.length)
         await publishProgress(jobId, 70, 'Files archive uploaded')
-      } else if (partIndex > 1 && part.name === '' || part.name === 'manifest.json') {
+      } else if ((partIndex > 1 && part.name === '') || part.name === 'manifest.json') {
         // Part 4: final manifest with checksums
         try {
           finalManifest = JSON.parse(part.data.toString('utf8')) as Record<string, unknown>
@@ -211,7 +379,16 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
     }
 
     const manifest = Object.keys(finalManifest).length > 0 ? finalManifest : initialManifest
-    const storagePath = `backups/${siteId}/${backup.id}`
+    const uploadedObjectNames = new Set(uploadedObjects.map((object) => object.name))
+    const missingExpectedObjects = expectedObjectNames.filter((name) => !uploadedObjectNames.has(name))
+
+    if (missingExpectedObjects.length > 0) {
+      throw new Error(`Backup stream completed without expected storage objects: ${missingExpectedObjects.join(', ')}`)
+    }
+
+    if (uploadedObjects.length === 0) {
+      throw new Error('Backup finished without uploading any storage objects')
+    }
 
     // 7. Update backup record with manifest and completion status
     await db
@@ -220,6 +397,7 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
         status: 'complete',
         manifest,
         storagePath,
+        sizeBytes,
         completedAt: new Date(),
       })
       .where(eq(backups.id, backup.id))
@@ -230,14 +408,44 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
       .set({
         status: 'complete',
         progress: 100,
-        result: { backupId: backup.id, storagePath, manifest },
+        result: {
+          backupId: backup.id,
+          storagePath,
+          manifest,
+          storageProfileId: selectedStorageProfileId,
+          storageTarget,
+          expectedObjectNames,
+          receivedParts,
+          uploadedObjects,
+          totalUploadedBytes: Number(sizeBytes),
+        },
         updatedAt: new Date(),
       })
       .where(eq(jobs.id, jobId))
 
+    logBackup(jobId, 'Backup completed successfully', {
+      backupId: backup.id,
+      storagePath,
+      totalUploadedBytes: Number(sizeBytes),
+      uploadedObjects,
+      storageTarget,
+    })
     await publishProgress(jobId, 100, 'Backup complete')
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
+    console.error(
+      `[backup:${jobId}] Backup failed`,
+      JSON.stringify({
+        error: errorMessage,
+        siteId,
+        backupId: backup.id,
+        selectedStorageProfileId,
+        storageTarget,
+        expectedObjectNames,
+        receivedParts,
+        uploadedObjects,
+      }),
+    )
 
     // Mark backup as failed
     await db
@@ -250,7 +458,14 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
       .update(jobs)
       .set({
         status: 'failed',
-        result: { error: errorMessage },
+        result: {
+          error: errorMessage,
+          storageProfileId: selectedStorageProfileId,
+          storageTarget,
+          expectedObjectNames,
+          receivedParts,
+          uploadedObjects,
+        },
         updatedAt: new Date(),
       })
       .where(eq(jobs.id, jobId))

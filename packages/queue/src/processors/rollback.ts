@@ -46,7 +46,12 @@ export async function processRollbackJob(job: Job<RollbackJobPayload>): Promise<
         type: 'backup',
         siteId,
         status: 'pending',
-        payload: { siteId, type: 'full', snapshotTag: 'pre-rollback' },
+        payload: {
+          siteId,
+          type: 'full',
+          storageProfileId: site.storageProfileId ?? undefined,
+          snapshotTag: 'pre-rollback',
+        },
       })
       .returning()
 
@@ -54,7 +59,12 @@ export async function processRollbackJob(job: Job<RollbackJobPayload>): Promise<
 
     await backupQueue.add(
       'backup',
-      { siteId, type: 'full', snapshotTag: 'pre-rollback' },
+      {
+        siteId,
+        type: 'full',
+        storageProfileId: site.storageProfileId ?? undefined,
+        snapshotTag: 'pre-rollback',
+      },
       { jobId: preRollbackJobRecord.id },
     )
 
@@ -69,9 +79,10 @@ export async function processRollbackJob(job: Job<RollbackJobPayload>): Promise<
 
     // 3. Resolve storage adapter for the backup
     let storageAdapter
-    if (site.storageProfileId) {
+    const backupStorageProfileId = backup.storageProfileId ?? site.storageProfileId
+    if (backupStorageProfileId) {
       const profile = await db.query.storageProfiles.findFirst({
-        where: eq(storageProfiles.id, site.storageProfileId),
+        where: eq(storageProfiles.id, backupStorageProfileId),
       })
       if (profile) {
         storageAdapter = StorageAdapterFactory.create(profile)

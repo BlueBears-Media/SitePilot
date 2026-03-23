@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto'
-import { db, sites, jobs } from '@sitepilot/db'
+import { db, sites, jobs, backups, updateChecks, notifications, storageProfiles } from '@sitepilot/db'
 import { eq } from 'drizzle-orm'
 import { createSiteSchema, updateSiteSchema, applyUpdateSchema, rollbackSchema } from '@sitepilot/validators'
 import { backupQueue, updateCheckQueue, applyUpdateQueue, rollbackQueue } from '@sitepilot/queue'
@@ -28,6 +28,14 @@ export function decryptToken(stored: string): string {
   return decipher.update(Buffer.from(encHex, 'hex')).toString('utf8') + decipher.final('utf8')
 }
 
+function generateCompanionToken(): { rawToken: string; encryptedToken: string } {
+  const rawToken = randomBytes(32).toString('hex')
+  return {
+    rawToken,
+    encryptedToken: encryptToken(rawToken),
+  }
+}
+
 export async function sitesRoutes(fastify: FastifyInstance): Promise<void> {
   // All routes require authentication
   fastify.addHook('preHandler', requireAuth)
@@ -49,8 +57,7 @@ export async function sitesRoutes(fastify: FastifyInstance): Promise<void> {
     }
 
     // Generate companion token — stored AES-256-GCM encrypted so backend can sign HMAC requests
-    const rawToken = randomBytes(32).toString('hex')
-    const encryptedToken = encryptToken(rawToken)
+    const { rawToken, encryptedToken } = generateCompanionToken()
 
     const [site] = await db
       .insert(sites)
@@ -81,6 +88,54 @@ export async function sitesRoutes(fastify: FastifyInstance): Promise<void> {
     return reply.send(site)
   })
 
+  // POST /sites/:id/rotate-token — generate a new one-time companion token
+  fastify.post('/sites/:id/rotate-token', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const existingSite = await db.query.sites.findFirst({ where: eq(sites.id, id) })
+    if (!existingSite) return reply.status(404).send({ error: 'Site not found' })
+
+    const { rawToken, encryptedToken } = generateCompanionToken()
+
+    const [updatedSite] = await db
+      .update(sites)
+      .set({
+        companionTokenHash: encryptedToken,
+        status: 'unknown',
+      })
+      .where(eq(sites.id, id))
+      .returning()
+
+    if (!updatedSite) return reply.status(404).send({ error: 'Site not found' })
+
+    return reply.send({
+      ...updatedSite,
+      companionToken: rawToken,
+      _warning: 'Save this token now — the previous token was invalidated immediately',
+    })
+  })
+
+  // GET /sites/:id/updates — latest stored update-check result for this site
+  fastify.get('/sites/:id/updates', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const site = await db.query.sites.findFirst({ where: eq(sites.id, id) })
+    if (!site) return reply.status(404).send({ error: 'Site not found' })
+
+    const latestUpdateCheck = await db.query.updateChecks.findFirst({
+      where: eq(updateChecks.siteId, id),
+      orderBy: (updateChecks, { desc }) => [desc(updateChecks.checkedAt)],
+    })
+
+    return reply.send(
+      latestUpdateCheck ?? {
+        siteId: id,
+        coreUpdate: null,
+        pluginUpdates: [],
+        themeUpdates: [],
+        checkedAt: null,
+      },
+    )
+  })
+
   // PATCH /sites/:id
   fastify.patch('/sites/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
@@ -93,6 +148,14 @@ export async function sitesRoutes(fastify: FastifyInstance): Promise<void> {
     if (result.data.name !== undefined) updateData['name'] = result.data.name
     if (result.data.url !== undefined) updateData['url'] = result.data.url
     if (result.data.storageProfileId !== undefined) {
+      if (result.data.storageProfileId !== null) {
+        const storageProfile = await db.query.storageProfiles.findFirst({
+          where: eq(storageProfiles.id, result.data.storageProfileId),
+        })
+        if (!storageProfile) {
+          return reply.status(404).send({ error: 'Storage profile not found' })
+        }
+      }
       updateData['storageProfileId'] = result.data.storageProfileId
     }
 
@@ -104,9 +167,23 @@ export async function sitesRoutes(fastify: FastifyInstance): Promise<void> {
   // DELETE /sites/:id
   fastify.delete('/sites/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const [deleted] = await db.delete(sites).where(eq(sites.id, id)).returning()
-    if (!deleted) return reply.status(404).send({ error: 'Site not found' })
-    return reply.status(204).send()
+    try {
+      const deleted = await db.transaction(async (tx) => {
+        await tx.delete(notifications).where(eq(notifications.siteId, id))
+        await tx.delete(updateChecks).where(eq(updateChecks.siteId, id))
+        await tx.delete(backups).where(eq(backups.siteId, id))
+        await tx.delete(jobs).where(eq(jobs.siteId, id))
+
+        const [site] = await tx.delete(sites).where(eq(sites.id, id)).returning()
+        return site
+      })
+
+      if (!deleted) return reply.status(404).send({ error: 'Site not found' })
+      return reply.status(204).send()
+    } catch (error) {
+      request.log.error({ error, siteId: id }, 'Failed to delete site')
+      return reply.status(500).send({ error: 'Failed to delete site' })
+    }
   })
 
   // POST /sites/:id/check-updates — enqueue update check job

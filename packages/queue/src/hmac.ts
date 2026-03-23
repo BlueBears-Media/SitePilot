@@ -18,6 +18,28 @@ export function decryptToken(stored: string): string {
 }
 
 /**
+ * WordPress verifies signatures against WP_REST_Request::get_route(), which is
+ * the registered REST route path without the `/wp-json` prefix and without any
+ * query string. Normalize outbound paths so the backend signs the exact same
+ * canonical value the companion plugin reconstructs.
+ */
+export function normalizeWordPressRestPath(path: string): string {
+  const [withoutQuery] = path.split(/[?#]/, 1)
+  const normalized = withoutQuery && withoutQuery.length > 0 ? withoutQuery : path
+  const withLeadingSlash = normalized.startsWith('/') ? normalized : `/${normalized}`
+
+  if (withLeadingSlash === '/wp-json') {
+    return '/'
+  }
+
+  if (withLeadingSlash.startsWith('/wp-json/')) {
+    return withLeadingSlash.slice('/wp-json'.length)
+  }
+
+  return withLeadingSlash
+}
+
+/**
  * Signs an outbound request to the companion plugin using HMAC-SHA256.
  *
  * Message format: `${timestamp}.${METHOD}.${path}.${sha256(body)}`
@@ -32,9 +54,10 @@ export function signRequest(params: {
   token: string
 }): { timestamp: string; signature: string } {
   const timestamp = Math.floor(Date.now() / 1000).toString()
+  const canonicalPath = normalizeWordPressRestPath(params.path)
 
   const bodyHash = createHash('sha256').update(params.body, 'utf8').digest('hex')
-  const message = `${timestamp}.${params.method.toUpperCase()}.${params.path}.${bodyHash}`
+  const message = `${timestamp}.${params.method.toUpperCase()}.${canonicalPath}.${bodyHash}`
 
   const signature = createHmac('sha256', params.token).update(message).digest('hex')
 
@@ -60,8 +83,9 @@ export function verifySignature(params: {
     return false
   }
 
+  const canonicalPath = normalizeWordPressRestPath(params.path)
   const bodyHash = createHash('sha256').update(params.body, 'utf8').digest('hex')
-  const message = `${params.timestamp}.${params.method.toUpperCase()}.${params.path}.${bodyHash}`
+  const message = `${params.timestamp}.${params.method.toUpperCase()}.${canonicalPath}.${bodyHash}`
   const expected = createHmac('sha256', params.token).update(message).digest('hex')
 
   // Use a constant-time comparison to prevent timing attacks

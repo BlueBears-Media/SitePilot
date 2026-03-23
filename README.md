@@ -6,7 +6,7 @@ SitePilot is an open-source, self-hosted web agency management platform. It give
 
 - **Site management** — Track WordPress version, PHP version, and companion plugin status across all sites
 - **Update management** — Check for and apply core, plugin, and theme updates with one click
-- **Pre-update backups** — Every update automatically takes a backup snapshot before proceeding
+- **On-demand backups** — Create backups whenever you need them before updates or larger changes
 - **Backups** — Full, database-only, or files-only backups streamed directly to S3, NFS, or local storage
 - **One-click rollback** — Roll back any site to any previous backup via the companion plugin
 - **Manual restore** — Use `restore-helper.php` to restore a site on a fresh host with no WordPress installed

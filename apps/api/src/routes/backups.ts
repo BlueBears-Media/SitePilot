@@ -3,10 +3,37 @@ import { db, backups, sites, storageProfiles, jobs } from '@sitepilot/db'
 import { eq } from 'drizzle-orm'
 import { createBackupSchema } from '@sitepilot/validators'
 import { backupQueue } from '@sitepilot/queue'
-import { StorageAdapterFactory } from '@sitepilot/storage'
+import { StorageAdapterFactory, LocalAdapter, type StorageAdapter } from '@sitepilot/storage'
 import { requireAuth } from '../plugins/auth'
 
 const DOWNLOAD_URL_EXPIRY = 15 * 60 // 15 minutes in seconds
+
+function createLocalStorageAdapter(): StorageAdapter {
+  return new LocalAdapter({
+    apiBaseUrl: process.env['API_BASE_URL'] ?? 'http://localhost:3001',
+    tokenSecret: process.env['STORAGE_ENCRYPTION_KEY'] ?? 'dev-secret',
+  })
+}
+
+async function resolveBackupStorageAdapter(
+  backupStorageProfileId: string | null,
+  siteStorageProfileId: string | null,
+): Promise<StorageAdapter> {
+  const storageProfileId = backupStorageProfileId ?? siteStorageProfileId
+
+  if (storageProfileId) {
+    const profile = await db.query.storageProfiles.findFirst({
+      where: eq(storageProfiles.id, storageProfileId),
+    })
+    if (!profile) {
+      throw new Error(`Storage profile not found: ${storageProfileId}`)
+    }
+
+    return StorageAdapterFactory.create(profile)
+  }
+
+  return createLocalStorageAdapter()
+}
 
 export async function backupsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.addHook('preHandler', requireAuth)
@@ -31,10 +58,18 @@ export async function backupsRoutes(fastify: FastifyInstance): Promise<void> {
 
     const site = await db.query.sites.findFirst({ where: eq(sites.id, id) })
     if (!site) return reply.status(404).send({ error: 'Site not found' })
+    if (
+      !(await db.query.storageProfiles.findFirst({
+        where: eq(storageProfiles.id, result.data.storageProfileId),
+      }))
+    ) {
+      return reply.status(404).send({ error: 'Storage profile not found' })
+    }
 
     const payload = {
       siteId: id,
       type: result.data.type,
+      storageProfileId: result.data.storageProfileId,
       snapshotTag: result.data.snapshotTag,
     }
 
@@ -66,22 +101,18 @@ export async function backupsRoutes(fastify: FastifyInstance): Promise<void> {
 
     // Attempt to delete from storage as well
     const site = await db.query.sites.findFirst({ where: eq(sites.id, backup.siteId) })
-    if (site?.storageProfileId) {
-      const profile = await db.query.storageProfiles.findFirst({
-        where: eq(storageProfiles.id, site.storageProfileId),
-      })
-      if (profile) {
-        try {
-          const adapter = StorageAdapterFactory.create(profile)
-          if (backup.storagePath) {
-            await adapter.delete(`${backup.storagePath}/dump.sql`).catch(() => undefined)
-            await adapter.delete(`${backup.storagePath}/files.tar.gz`).catch(() => undefined)
-          }
-        } catch {
-          // Log but don't fail the delete if storage cleanup fails
-          fastify.log.warn(`Failed to delete storage files for backup ${id}`)
-        }
+    try {
+      const adapter = await resolveBackupStorageAdapter(
+        backup.storageProfileId,
+        site?.storageProfileId ?? null,
+      )
+      if (backup.storagePath) {
+        await adapter.delete(`${backup.storagePath}/dump.sql`).catch(() => undefined)
+        await adapter.delete(`${backup.storagePath}/files.tar.gz`).catch(() => undefined)
       }
+    } catch {
+      // Log but don't fail the delete if storage cleanup fails
+      fastify.log.warn(`Failed to delete storage files for backup ${id}`)
     }
 
     await db.delete(backups).where(eq(backups.id, id))
@@ -100,22 +131,15 @@ export async function backupsRoutes(fastify: FastifyInstance): Promise<void> {
     const site = await db.query.sites.findFirst({ where: eq(sites.id, backup.siteId) })
     if (!site) return reply.status(404).send({ error: 'Site not found' })
 
-    let storageAdapter
-    if (site.storageProfileId) {
-      const profile = await db.query.storageProfiles.findFirst({
-        where: eq(storageProfiles.id, site.storageProfileId),
-      })
-      if (profile) {
-        storageAdapter = StorageAdapterFactory.create(profile)
-      }
-    }
-
-    if (!storageAdapter) {
-      const { LocalAdapter } = await import('@sitepilot/storage')
-      storageAdapter = new LocalAdapter({
-        apiBaseUrl: process.env['API_BASE_URL'] ?? 'http://localhost:3001',
-        tokenSecret: process.env['STORAGE_ENCRYPTION_KEY'] ?? 'dev-secret',
-      })
+    let storageAdapter: StorageAdapter
+    try {
+      storageAdapter = await resolveBackupStorageAdapter(
+        backup.storageProfileId,
+        site.storageProfileId,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to resolve backup storage'
+      return reply.status(409).send({ error: message })
     }
 
     const key = `${backup.storagePath}/${file}`
