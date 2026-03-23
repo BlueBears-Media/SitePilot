@@ -36,6 +36,10 @@ class Restore
         }
 
         $job_id = wp_generate_uuid4();
+        RequestLog::info('Restore job queued', [
+            'job_id' => $job_id,
+            'scope'  => $scope,
+        ]);
 
         set_transient('sitepilot_job_' . $job_id, [
             'status'  => 'running',
@@ -45,7 +49,6 @@ class Restore
         // Store manifest in a separate transient for the background job
         set_transient('sitepilot_restore_manifest_' . $job_id, $manifest, 600);
 
-        add_action('sitepilot_run_restore', [self::class, 'run_restore'], 10, 4);
         wp_schedule_single_event(time(), 'sitepilot_run_restore', [$job_id, $signed_url, $manifest, $scope]);
 
         // Immediately trigger cron via popen() if available
@@ -227,6 +230,11 @@ class Restore
                 'status'  => 'failed',
                 'message' => $e->getMessage(),
             ], 600);
+            RequestLog::error('Restore job failed', [
+                'job_id'  => $job_id,
+                'scope'   => $scope,
+                'message' => $e->getMessage(),
+            ]);
         }
     }
 
@@ -238,6 +246,11 @@ class Restore
     private static function set_state(string $key, string $status, string $message): void
     {
         set_transient($key, ['status' => $status, 'message' => $message], 600);
+        RequestLog::info('Restore job state changed', [
+            'job_id'  => str_replace('sitepilot_job_', '', $key),
+            'status'  => $status,
+            'message' => $message,
+        ]);
     }
 
     /**

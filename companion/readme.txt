@@ -18,7 +18,7 @@ Once configured, SitePilot can:
 
 * Create full, database-only, or files-only backups streamed directly to your storage provider
 * Check for WordPress core, plugin, and theme updates
-* Apply updates automatically with pre-update backup safety snapshots
+* Apply updates remotely from SitePilot
 * Roll back your site to any previous backup state
 * Monitor site health and uptime
 

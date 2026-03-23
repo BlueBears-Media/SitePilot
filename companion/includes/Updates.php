@@ -22,6 +22,8 @@ namespace SitePilot;
  */
 class Updates
 {
+    private const JOB_TTL = 1800;
+
     /**
      * Check for available updates.
      * Forces a fresh check before reading transients.
@@ -51,23 +53,25 @@ class Updates
      */
     public static function handle_apply(\WP_REST_Request $request): \WP_REST_Response
     {
-        $update_type = $request->get_param('update_type') ?? '';
-        $slug        = $request->get_param('slug') ?? '';
+        $update_type = sanitize_key((string) ($request->get_param('update_type') ?? ''));
+        $slug        = sanitize_text_field((string) ($request->get_param('slug') ?? ''));
 
         if (! in_array($update_type, ['core', 'plugin', 'theme'], true)) {
             return new \WP_REST_Response(['error' => 'Invalid update_type'], 400);
         }
 
         $job_id = wp_generate_uuid4();
+        RequestLog::info('Update job queued', [
+            'job_id'      => $job_id,
+            'update_type' => $update_type,
+            'slug'        => $slug,
+        ]);
 
-        // Store initial state as a transient (10 minute TTL)
+        // Store initial state as a transient long enough for slower hosts.
         set_transient('sitepilot_job_' . $job_id, [
             'status'  => 'running',
             'message' => 'Starting update',
-        ], 600);
-
-        // Register the cron action hook before scheduling
-        add_action('sitepilot_run_update', [self::class, 'run_update'], 10, 3);
+        ], self::JOB_TTL);
 
         // Schedule the actual update work
         wp_schedule_single_event(time(), 'sitepilot_run_update', [$job_id, $update_type, $slug]);
@@ -79,7 +83,8 @@ class Updates
             $cron_path  = ABSPATH . 'wp-cron.php';
             if (file_exists($cron_path)) {
                 // Detach: > /dev/null 2>&1 & ensures the process runs independently
-                @popen("{$php_binary} {$cron_path} > /dev/null 2>&1 &", 'r');
+                $command = escapeshellarg($php_binary) . ' ' . escapeshellarg($cron_path) . ' > /dev/null 2>&1 &';
+                @popen($command, 'r');
             }
         }
         // Fallback (popen disabled): wp_schedule_single_event above will fire
@@ -117,6 +122,7 @@ class Updates
     {
         $transient_key = 'sitepilot_job_' . $job_id;
 
+        set_time_limit(0);
         self::update_job_state($transient_key, 'running', 'Loading update classes');
 
         try {
@@ -144,9 +150,9 @@ class Updates
 
     private static function update_core(string $transient_key): void
     {
-        require_once ABSPATH . 'wp-admin/includes/update.php';
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
         require_once ABSPATH . 'wp-admin/includes/class-automatic-upgrader-skin.php';
+        self::refresh_available_updates();
 
         self::update_job_state($transient_key, 'running', 'Downloading WordPress core update');
 
@@ -161,39 +167,54 @@ class Updates
         $upgrader = new \Core_Upgrader(new \Automatic_Upgrader_Skin());
         $result   = $upgrader->upgrade($update, ['attempt_rollback' => true]);
 
-        if (is_wp_error($result)) {
-            throw new \RuntimeException($result->get_error_message());
-        }
+        self::assert_update_succeeded($result, 'WordPress core update');
     }
 
     private static function update_plugin(string $transient_key, string $slug): void
     {
-        require_once ABSPATH . 'wp-admin/includes/update.php';
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
         require_once ABSPATH . 'wp-admin/includes/class-automatic-upgrader-skin.php';
+        self::refresh_available_updates();
 
         if (empty($slug)) {
             throw new \InvalidArgumentException('Plugin slug is required');
         }
 
-        self::update_job_state($transient_key, 'running', "Updating plugin: {$slug}");
+        $plugin_file       = self::resolve_plugin_file($slug);
+        $updates           = get_site_transient('update_plugins');
+        $available_updates = is_object($updates) && isset($updates->response) && is_array($updates->response)
+            ? $updates->response
+            : [];
+
+        if (! isset($available_updates[$plugin_file])) {
+            throw new \RuntimeException("No update is currently available for plugin: {$plugin_file}");
+        }
+
+        self::update_job_state($transient_key, 'running', "Updating plugin: {$plugin_file}");
 
         $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
-        $result   = $upgrader->upgrade($slug);
+        $result   = $upgrader->upgrade($plugin_file);
 
-        if (is_wp_error($result)) {
-            throw new \RuntimeException($result->get_error_message());
-        }
+        self::assert_update_succeeded($result, "Plugin update for {$plugin_file}");
     }
 
     private static function update_theme(string $transient_key, string $slug): void
     {
-        require_once ABSPATH . 'wp-admin/includes/update.php';
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
         require_once ABSPATH . 'wp-admin/includes/class-automatic-upgrader-skin.php';
+        self::refresh_available_updates();
 
         if (empty($slug)) {
             throw new \InvalidArgumentException('Theme slug is required');
+        }
+
+        $updates           = get_site_transient('update_themes');
+        $available_updates = is_object($updates) && isset($updates->response) && is_array($updates->response)
+            ? $updates->response
+            : [];
+
+        if (! isset($available_updates[$slug])) {
+            throw new \RuntimeException("No update is currently available for theme: {$slug}");
         }
 
         self::update_job_state($transient_key, 'running', "Updating theme: {$slug}");
@@ -201,9 +222,7 @@ class Updates
         $upgrader = new \Theme_Upgrader(new \Automatic_Upgrader_Skin());
         $result   = $upgrader->upgrade($slug);
 
-        if (is_wp_error($result)) {
-            throw new \RuntimeException($result->get_error_message());
-        }
+        self::assert_update_succeeded($result, "Theme update for {$slug}");
     }
 
     /**
@@ -233,6 +252,8 @@ class Updates
      */
     private static function get_plugin_updates(): array
     {
+        require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
         $updates        = get_site_transient('update_plugins');
         $active_plugins = (array) get_option('active_plugins', []);
         $all_plugins    = get_plugins();
@@ -246,6 +267,7 @@ class Updates
             $plugin_info = $all_plugins[$plugin_file] ?? [];
             $plugin_updates[] = [
                 'slug'              => $plugin_data->slug ?? dirname($plugin_file),
+                'plugin_file'       => $plugin_file,
                 'name'              => $plugin_info['Name'] ?? $plugin_data->slug ?? $plugin_file,
                 'current_version'   => $plugin_info['Version'] ?? '',
                 'available_version' => $plugin_data->new_version ?? '',
@@ -288,6 +310,53 @@ class Updates
      */
     private static function update_job_state(string $transient_key, string $status, string $message): void
     {
-        set_transient($transient_key, ['status' => $status, 'message' => $message], 600);
+        set_transient($transient_key, ['status' => $status, 'message' => $message], self::JOB_TTL);
+        RequestLog::info('Update job state changed', [
+            'job_id'  => str_replace('sitepilot_job_', '', $transient_key),
+            'status'  => $status,
+            'message' => $message,
+        ]);
+    }
+
+    private static function refresh_available_updates(): void
+    {
+        require_once ABSPATH . 'wp-admin/includes/update.php';
+
+        wp_version_check();
+        wp_update_plugins();
+        wp_update_themes();
+    }
+
+    private static function assert_update_succeeded(mixed $result, string $operation): void
+    {
+        if (is_wp_error($result)) {
+            throw new \RuntimeException($result->get_error_message());
+        }
+
+        if ($result !== true) {
+            throw new \RuntimeException("{$operation} failed without returning a success result.");
+        }
+    }
+
+    private static function resolve_plugin_file(string $plugin_identifier): string
+    {
+        require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+        $plugins = get_plugins();
+        if (isset($plugins[$plugin_identifier])) {
+            return $plugin_identifier;
+        }
+
+        foreach (array_keys($plugins) as $plugin_file) {
+            if (dirname($plugin_file) === $plugin_identifier) {
+                return $plugin_file;
+            }
+
+            if (pathinfo($plugin_file, PATHINFO_FILENAME) === $plugin_identifier) {
+                return $plugin_file;
+            }
+        }
+
+        throw new \InvalidArgumentException("Plugin not found for identifier: {$plugin_identifier}");
     }
 }
