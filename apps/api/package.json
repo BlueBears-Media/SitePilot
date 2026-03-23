@@ -1,0 +1,30 @@
+{
+  "name": "@sitepilot/api",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "bun --env-file ../../.env --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "@fastify/jwt": "^9.0.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^9.0.0",
+    "@fastify/helmet": "^12.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/cookie": "^11.0.0",
+    "bcrypt": "^5.1.1",
+    "drizzle-orm": "0.36.4",
+    "fastify-plugin": "^4.5.1",
+    "@sitepilot/db": "workspace:*",
+    "@sitepilot/queue": "workspace:*",
+    "@sitepilot/storage": "workspace:*",
+    "@sitepilot/validators": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "@types/node": "^22.0.0",
+    "@types/bcrypt": "^5.0.2"
+  }
+}

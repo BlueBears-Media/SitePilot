@@ -1,0 +1,13 @@
+node_modules
+apps/api/node_modules
+apps/web/node_modules
+packages/db/node_modules
+packages/queue/node_modules
+packages/storage/node_modules
+packages/validators/node_modules
+.git
+.claude
+*.md
+!README.md
+apps/web/.next
+apps/web/out

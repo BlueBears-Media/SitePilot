@@ -1,0 +1,25 @@
+version: '3.9'
+
+# Development override — runs ONLY infrastructure (postgres + redis).
+# Run the API and web locally:
+#   bun run --filter '@sitepilot/api' dev    (port 3001)
+#   bun run --filter '@sitepilot/web' dev    (port 3000)
+# Or from their respective directories:
+#   cd apps/api && bun run dev
+#   cd apps/web && bun run dev
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: sitepilot
+      POSTGRES_PASSWORD: sitepilot_dev
+      POSTGRES_DB: sitepilot
+
+  redis:
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+volumes: {}

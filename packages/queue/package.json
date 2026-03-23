@@ -1,0 +1,17 @@
+{
+  "name": "@sitepilot/queue",
+  "version": "0.1.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "bullmq": "^5.12.0",
+    "drizzle-orm": "0.36.4",
+    "ioredis": "^5.4.1",
+    "@sitepilot/db": "workspace:*",
+    "@sitepilot/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "@types/node": "^22.0.0"
+  }
+}

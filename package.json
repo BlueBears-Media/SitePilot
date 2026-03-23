@@ -1,0 +1,17 @@
+{
+  "name": "sitepilot",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "infra": "docker compose -f docker-compose.infra.yml up -d",
+    "dev:api": "bun run --filter '@sitepilot/api' dev",
+    "dev:web": "bun run --filter '@sitepilot/web' dev",
+    "build": "bun run --filter '*' build",
+    "db:generate": "bun run --filter '@sitepilot/db' db:generate",
+    "db:migrate": "bun run --filter '@sitepilot/db' db:migrate"
+  }
+}
