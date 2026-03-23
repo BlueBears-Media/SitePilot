@@ -7,7 +7,7 @@ import {
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { Readable } from 'node:stream'
-import type { StorageAdapter } from '../interface'
+import type { StorageAdapter, StorageUploadOptions } from '../interface'
 
 export interface S3AdapterConfig {
   bucket: string
@@ -35,12 +35,13 @@ export class S3Adapter implements StorageAdapter {
     })
   }
 
-  async upload(key: string, stream: Readable, meta?: Record<string, string>): Promise<void> {
+  async upload(key: string, stream: Readable, options?: StorageUploadOptions): Promise<void> {
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
       Body: stream,
-      Metadata: meta,
+      Metadata: options?.metadata,
+      ContentLength: options?.contentLength,
     })
     await this.client.send(command)
   }

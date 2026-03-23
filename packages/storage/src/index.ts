@@ -1,4 +1,4 @@
-export type { StorageAdapter } from './interface'
+export type { StorageAdapter, StorageUploadOptions } from './interface'
 export { S3Adapter } from './adapters/s3'
 export type { S3AdapterConfig } from './adapters/s3'
 export { NfsAdapter } from './adapters/nfs'

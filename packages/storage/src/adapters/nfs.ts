@@ -3,7 +3,7 @@ import { unlink, stat, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createHmac } from 'node:crypto'
 import type { Readable } from 'node:stream'
-import type { StorageAdapter } from '../interface'
+import type { StorageAdapter, StorageUploadOptions } from '../interface'
 
 export interface NfsAdapterConfig {
   mountPath: string
@@ -28,7 +28,7 @@ export class NfsAdapter implements StorageAdapter {
     return join(this.mountPath, normalized)
   }
 
-  async upload(key: string, stream: Readable, _meta?: Record<string, string>): Promise<void> {
+  async upload(key: string, stream: Readable, _options?: StorageUploadOptions): Promise<void> {
     const filePath = this.resolvePath(key)
     // Ensure parent directory exists
     await mkdir(dirname(filePath), { recursive: true })

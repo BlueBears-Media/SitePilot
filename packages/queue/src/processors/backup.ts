@@ -326,7 +326,9 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
         // Part 2: database dump
         const storageKey = `${storagePath}/dump.sql`
         const readable = Readable.from(part.data)
-        await storageAdapter.upload(storageKey, readable)
+        await storageAdapter.upload(storageKey, readable, {
+          contentLength: part.data.length,
+        })
         const existsAfterUpload = await storageAdapter.exists(storageKey)
         uploadedObjects.push({
           name: part.name,
@@ -349,7 +351,9 @@ export async function processBackupJob(job: Job<BackupJobPayload>): Promise<void
         // Part 3: files archive
         const storageKey = `${storagePath}/files.tar.gz`
         const readable = Readable.from(part.data)
-        await storageAdapter.upload(storageKey, readable)
+        await storageAdapter.upload(storageKey, readable, {
+          contentLength: part.data.length,
+        })
         const existsAfterUpload = await storageAdapter.exists(storageKey)
         uploadedObjects.push({
           name: part.name,
